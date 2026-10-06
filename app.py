@@ -39,10 +39,10 @@ def _secret_int(name: str, default: int) -> int:
 # Access Gate (시설별 코드 여러 개 허용: "code1,code2")
 # ─────────────────────────────────────────────
 ACCESS_CODES = [c.strip() for c in str(_secret("ACCESS_CODE", "")).split(",") if c.strip()]
-ADMIN_CODE = str(_secret("ADMIN_CODE", "")).strip()
+ADMIN_CODES = [c.strip() for c in str(_secret("ADMIN_CODE", "")).split(",") if c.strip()]  # 관리자 여러 명 가능
 LOG_WEBHOOK_URL = str(_secret("LOG_WEBHOOK_URL", "")).strip()
 
-if (ACCESS_CODES or ADMIN_CODE) and not st.session_state.get("authed", False):
+if (ACCESS_CODES or ADMIN_CODES) and not st.session_state.get("authed", False):
     st.info("🔒 부천시 어린이집·사회복지시설 전용 앱입니다. 센터에서 안내받은 **접속 코드**와 **상담자 정보**를 입력하세요.")
     with st.form("login"):
         code_in = st.text_input("접속 코드 *", type="password")
@@ -53,11 +53,11 @@ if (ACCESS_CODES or ADMIN_CODE) and not st.session_state.get("authed", False):
         with c2:
             role_in = st.selectbox("직책 *", ["영양사", "조리사", "원장/시설장", "교사/사회복지사", "기타"])
             phone_in = st.text_input("연락처 *", placeholder="예: 032-000-0000")
-        agree = st.checkbox("상담 내용(기관명·담당자·질문·답변)이 센터에 기록·보관되며, 식단 변경의 최종 확정은 센터 영양사 감수를 거쳐야 함을 확인합니다. *")
+        agree = st.checkbox("상담 내용(기관명·담당자·질문·답변)이 센터에 기록·보관되며, 식단 변경은 센터 영양사의 승인 후에만 적용할 수 있음을 확인합니다. *")
         ok = st.form_submit_button("입장", use_container_width=True)
     if ok:
         code = code_in.strip()
-        is_admin = bool(ADMIN_CODE) and code == ADMIN_CODE
+        is_admin = code in ADMIN_CODES
         if not (is_admin or code in ACCESS_CODES):
             st.error("접속 코드가 올바르지 않습니다. 센터로 문의해 주세요.")
         elif not (org_in.strip() and name_in.strip() and phone_in.strip() and agree):
@@ -231,17 +231,25 @@ def hwpx_to_text(file_bytes) -> str:
 # Generation
 # ─────────────────────────────────────────────
 LEGAL_FOOTER = (
-    "\n\n---\n*본 답변은 AI 1차 검토 자료입니다. 식단 변경의 최종 확정은 "
-    f"{R.CENTER_NAME} 영양사의 감수를 거쳐야 하며, 본 상담은 기관명·담당자와 함께 센터에 기록됩니다.*"
+    "\n\n---\n*본 답변은 AI 1차 검토 자료입니다. 식단 변경은 "
+    f"**{R.CENTER_NAME} 영양사의 승인 후에만** 적용할 수 있으며, 본 상담은 기관명·담당자와 함께 센터에 기록됩니다.*"
 )
+
+
+def approval_banner(rec_id: str | None):
+    msg = "🛑 **센터 영양사 승인 전에는 이 식단 변경을 적용할 수 없습니다.** 센터에서 승인 결과를 안내드립니다."
+    if rec_id:
+        msg += f"  \n상담번호: `{rec_id}` (문의 시 알려주세요)"
+    st.warning(msg)
 
 
 def context_block() -> str:
     return f"[상담 조건] 기관: {USER['org']} / 담당자: {USER['name']}({USER['role']}) / 대상: {target} / 식단 유형: {diet_type} / 조리 기준 인원: {headcount}명"
 
 
-def log_it(task: str, user_input: str, answer: str):
-    L.record(USER, target, diet_type, task, user_input, answer, model_name, LOG_WEBHOOK_URL)
+def log_it(task: str, user_input: str, answer: str) -> str:
+    row = L.record(USER, target, diet_type, task, user_input, answer, model_name, LOG_WEBHOOK_URL)
+    return row["상담번호"]
 
 
 def stream_answer(task_key: str, user_prompt: str, placeholder):
@@ -253,8 +261,8 @@ def stream_answer(task_key: str, user_prompt: str, placeholder):
     ):
         if ch.text:
             full += ch.text
-            placeholder.markdown(full + "▌")
-    placeholder.markdown(full)
+            placeholder.markdown(L.safe_md(full) + "▌")
+    placeholder.markdown(L.safe_md(full))
     return full
 
 
@@ -275,9 +283,11 @@ def run_task(task_key: str, prompt: str):
     ph = st.empty()
     try:
         text = stream_answer(task_key, prompt, ph)
-        ph.markdown(text + LEGAL_FOOTER)
-        st.session_state.last_result = {"key": task_key, "text": text}
-        log_it(task_key, prompt, text)
+        ph.markdown(L.safe_md(text) + LEGAL_FOOTER)
+        rec_id = log_it(task_key, prompt, text)
+        st.session_state.last_result = {"key": task_key, "text": text, "id": rec_id}
+        st.session_state.just_ran = True
+        approval_banner(rec_id)
     except Exception as e:  # noqa: BLE001
         st.error(f"답변 생성 중 오류: {e}")
 
@@ -286,6 +296,10 @@ def result_and_notice_ui(key: str, with_notice: bool = True):
     res = st.session_state.get("last_result", {})
     if res.get("key") != key or not res.get("text"):
         return
+    if not st.session_state.get("just_ran"):  # 버튼 클릭 등으로 화면이 다시 그려질 때 결과 유지
+        st.markdown("#### 🧑‍🏫 상담 결과")
+        st.markdown(L.safe_md(res["text"]) + LEGAL_FOOTER)
+        approval_banner(res.get("id"))
     st.divider()
     c1, c2 = st.columns(2)
     with c1:
@@ -304,7 +318,7 @@ def result_and_notice_ui(key: str, with_notice: bool = True):
         )
     if with_notice and st.session_state.get("notice"):
         st.markdown("#### 📋 조리사용 변경 안내문")
-        st.markdown(st.session_state.notice)
+        st.markdown(L.safe_md(st.session_state.notice))
         st.download_button("⬇️ 안내문 저장(.txt)", data=st.session_state.notice, file_name=f"식단변경안내_{_today()}.txt", mime="text/plain", key=f"dn_{key}")
 
 
@@ -419,7 +433,7 @@ with t5:
         st.session_state.messages = []
     for m in st.session_state.messages:
         with st.chat_message(m["role"]):
-            st.markdown(m["content"])
+            st.markdown(L.safe_md(m["content"]))
     if q := st.chat_input("급식 관련 질문 (식단·조리·위생·알레르기·원산지·보호자 안내 등)"):
         if _check_and_record():
             st.chat_message("user").markdown(q)
@@ -436,10 +450,11 @@ with t5:
                     ):
                         if ch.text:
                             full += ch.text
-                            ph.markdown(full + "▌")
-                    ph.markdown(full + LEGAL_FOOTER)
+                            ph.markdown(L.safe_md(full) + "▌")
+                    ph.markdown(L.safe_md(full) + LEGAL_FOOTER)
                     st.session_state.messages.append({"role": "assistant", "content": full})
-                    log_it("💬 자유 상담", q, full)
+                    rid = log_it("💬 자유 상담", q, full)
+                    approval_banner(rid)
                 except Exception as e:  # noqa: BLE001
                     st.error(f"답변 생성 중 오류: {e}")
 
@@ -452,15 +467,43 @@ if IS_ADMIN:
             st.success("구글 시트 자동 기록이 켜져 있습니다. 아래 표는 현재 서버 세션의 백업 기록입니다.")
         else:
             st.warning("LOG_WEBHOOK_URL 이 설정되지 않아 구글 시트 기록이 꺼져 있습니다. 서버가 재시작되면 아래 기록은 사라지니 주기적으로 CSV를 내려받으세요.")
+        # ── 영양사 승인 처리 ──
+        st.markdown("### ✅ 영양사 승인 처리")
+        pending = L.pending_rows()
+        if not pending:
+            st.info("승인 대기 중인 상담이 없습니다.")
+        else:
+            labels = {f"{r['상담번호']} · {r['기관명']} · {r['담당자']} · {r['상담유형']}": r["상담번호"] for r in pending}
+            pick = st.selectbox("승인 대기 상담 선택", list(labels.keys()))
+            sel = next(r for r in pending if r["상담번호"] == labels[pick])
+            with st.expander("상담 내용 보기", expanded=True):
+                st.markdown(f"**기관/담당자**: {sel['기관명']} · {sel['담당자']} ({sel['직책']}, {sel['연락처']})  \n**대상**: {sel['대상']} / {sel['식단유형']}  \n**감수 판정**: {sel['감수판정']}")
+                st.markdown("**질문 요약**")
+                st.code(sel["입력요약"], language=None)
+                st.markdown("**AI 답변 요약**")
+                st.code(sel["답변요약"], language=None)
+            with st.form("approve_form"):
+                status = st.radio("승인 결정 *", L.APPROVAL_STATES, horizontal=True)
+                comment = st.text_area("영양사 의견 (시설에 전달할 조건·수정 사항)", placeholder="예: 돼지고기 대체 승인. 단, 1.5cm 이하로 썰어 제공하고 원산지 게시판 수정할 것.")
+                ok = st.form_submit_button("승인 결정 저장", use_container_width=True)
+            if ok:
+                L.approve(sel["상담번호"], status, f"{USER['name']}({USER['role']})", comment.strip(), LOG_WEBHOOK_URL)
+                st.success(f"{sel['상담번호']} → {status} 처리되었습니다. (승인자: {USER['name']})")
+                st.rerun()
+
+        st.markdown("### 📈 통계")
         if not rows:
             st.info("아직 기록이 없습니다.")
         else:
             import collections
 
-            c1, c2, c3 = st.columns(3)
+            c1, c2, c3, c4 = st.columns(4)
             c1.metric("총 상담 건수", len(rows))
-            c2.metric("감수 요청 필요", sum(1 for r in rows if "요청" in r["감수판정"]))
-            c3.metric("이용 기관 수", len({r["기관명"] for r in rows}))
+            c2.metric("승인 대기", sum(1 for r in rows if r["승인상태"] == L.PENDING))
+            c3.metric("감수 요청 필요", sum(1 for r in rows if "요청" in r["감수판정"]))
+            c4.metric("이용 기관 수", len({r["기관명"] for r in rows}))
+            st.markdown("**승인 상태별 건수**")
+            st.table([{"승인상태": k, "건수": v} for k, v in collections.Counter(r["승인상태"] for r in rows).most_common()])
             st.markdown("**기관별 건수**")
             st.table([{"기관명": k, "건수": v} for k, v in collections.Counter(r["기관명"] for r in rows).most_common()])
             st.markdown("**상담 유형별 건수**")
@@ -469,12 +512,13 @@ if IS_ADMIN:
             st.table([{"날짜": k, "건수": v} for k, v in sorted(collections.Counter(r["일시"][:10] for r in rows).items())])
             st.markdown("**감수 요청 필요 건 목록**")
             need = [r for r in rows if "요청" in r["감수판정"]]
-            st.dataframe([{k: r[k] for k in ("일시", "기관명", "담당자", "연락처", "상담유형", "입력요약")} for r in need] or [{"안내": "없음"}], use_container_width=True)
+            st.dataframe([{k: r[k] for k in ("상담번호", "일시", "기관명", "담당자", "연락처", "상담유형", "승인상태", "입력요약")} for r in need] or [{"안내": "없음"}], use_container_width=True)
             st.markdown("**전체 기록**")
             st.dataframe(rows, use_container_width=True)
             st.download_button("⬇️ 전체 기록 CSV 내려받기 (엑셀용)", data=L.to_csv(rows), file_name=f"상담기록_{_today()}.csv", mime="text/csv")
         with st.expander("🔧 구글 시트 자동 기록 설정 방법 (Apps Script 코드)"):
             st.code(L.APPS_SCRIPT_CODE, language="javascript")
 
+st.session_state.just_ran = False
 st.divider()
 st.caption("⚠️ 본 앱의 답변은 센터 영양사의 전문적 검토를 전제로 한 참고 자료입니다. 알레르기·질식·감수 관련 최종 판단은 센터 지침과 영양사 확인을 따릅니다.")

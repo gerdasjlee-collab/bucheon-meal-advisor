@@ -7,7 +7,7 @@
 ```toml
 GEMINI_API_KEY = "..."
 ACCESS_CODE = "시설코드1,시설코드2"      # 쉼표로 여러 개 가능
-ADMIN_CODE = "센터관리자코드"            # 📊 센터 관리 탭(통계·CSV) 접근
+ADMIN_CODE = "관리자코드1,관리자코드2"    # 쉼표로 여러 명(팀장별) 가능 · 📊 센터 관리 탭 접근
 LOG_WEBHOOK_URL = ""                    # 구글 시트 Apps Script 웹앱 URL (설정 시 자동 기록)
 DAILY_LIMIT_PER_USER = 50
 DAILY_LIMIT_TOTAL = 800
