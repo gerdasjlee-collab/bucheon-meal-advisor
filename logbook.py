@@ -52,15 +52,16 @@ def safe_md(text: str) -> str:
 
 
 def extract_review(text: str) -> str:
-    for line in text.splitlines():
-        if "감수 판정" in line or "감수판정" in line:
-            s = line.replace("*", "").replace("#", "").strip()
-            if "불필요" in s:
-                return "감수 불필요"
-            if "필요" in s:
-                return "센터 감수 요청 필요"
-            return s[:60]
-    return "미판정"
+    """답변의 [감수 판정] 표시 이후 내용(줄바꿈 포함)에서 판정을 뽑는다."""
+    key = "감수 판정" if "감수 판정" in text else ("감수판정" if "감수판정" in text else None)
+    if not key:
+        return "미판정"
+    tail = text[text.rfind(key) + len(key):][:200].replace("*", "").replace("#", "").replace("]", "").strip()
+    if "불필요" in tail:
+        return "감수 불필요"
+    if "필요" in tail:
+        return "센터 감수 요청 필요"
+    return (tail.splitlines() or ["미판정"])[0][:60] or "미판정"
 
 
 def _post_webhook(url: str, row: dict):
@@ -152,7 +153,7 @@ function setup() {  // 처음 한 번 실행해도 되고, 첫 기록이 들어�
     const C = "where A is not null and I <> '✅ 영양사 승인처리'";
     s.getRange("A1").setValue("📊 급식 식단 조정 도우미 — 상담 통계 (자동 갱신)").setFontWeight("bold").setFontSize(13);
     s.getRange("A3").setValue("총 상담 건수");           s.getRange("B3").setFormula(`=IFERROR(COUNTA(QUERY(${R},"select A ${C}",1))-1,0)`);
-    s.getRange("A4").setValue("승인 대기");              s.getRange("B4").setFormula(`=IFERROR(COUNTA(QUERY(${R},"select A ${C} and M='승인 대기'",1))-1,0)`);
+    s.getRange("A4").setValue("승인 대기");              s.getRange("B4").setFormula(`=IFERROR(B3-(COUNTA(UNIQUE(QUERY(${R},"select A where A is not null and I = '✅ 영양사 승인처리'",1)))-1),B3)`);
     s.getRange("A5").setValue("감수 요청 필요");         s.getRange("B5").setFormula(`=IFERROR(COUNTA(QUERY(${R},"select A ${C} and L contains '요청'",1))-1,0)`);
     s.getRange("A6").setValue("이용 기관 수");           s.getRange("B6").setFormula(`=IFERROR(COUNTA(UNIQUE(QUERY(${R},"select C ${C}",1)))-1,0)`);
     s.getRange("A8").setValue("■ 기관별 건수").setFontWeight("bold");
