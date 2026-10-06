@@ -20,6 +20,7 @@ COLUMNS = [
     "입력요약", "답변요약", "감수판정", "승인상태", "승인자", "승인일시", "승인의견", "모델",
 ]
 APPROVAL_STATES = ["승인", "반려", "보완요청"]
+SHEET_URL = "https://docs.google.com/spreadsheets/d/1k9KotxrhsdCAoKikDTLN0AZToxI7fAGzgz3rR34fpU4/edit"
 PENDING = "승인 대기"
 
 
@@ -103,17 +104,29 @@ def record(user: dict, target: str, diet_type: str, task: str, user_input: str, 
     return row
 
 
-def approve(rec_id: str, status: str, approver: str, comment: str, webhook_url: str = "") -> dict | None:
-    """영양사 승인 처리: 메모리 행 갱신 + 시트에 '승인처리' 행 추가."""
-    for r in _memory_log():
-        if r["상담번호"] == rec_id:
-            r["승인상태"], r["승인자"], r["승인일시"], r["승인의견"] = status, approver, now_str(), comment
-            log_row = dict(r)
-            log_row["상담유형"] = "✅ 영양사 승인처리"
-            log_row["일시"] = r["승인일시"]
-            _send(log_row, webhook_url)
-            return r
-    return None
+APPROVE_MARK = "✅ 영양사 승인처리"
+
+
+def approve(rec_id: str, status: str, approver: str, comment: str, webhook_url: str = "", base: dict | None = None) -> dict | None:
+    """영양사 승인 처리: 시트의 원 상담 행 갱신 + '승인처리' 행 추가 (+ 메모리 백업 갱신)."""
+    when = now_str()
+    r = None
+    for m in _memory_log():
+        if m["상담번호"] == rec_id:
+            m["승인상태"], m["승인자"], m["승인일시"], m["승인의견"] = status, approver, when, comment
+            r = m
+            break
+    if r is None and base is not None:
+        r = dict(base)
+        r.update({"승인상태": status, "승인자": approver, "승인일시": when, "승인의견": comment})
+    if r is None:
+        return None
+    if webhook_url:
+        log_row = dict(r)
+        log_row.update({"action": "approve", "상담유형": APPROVE_MARK, "일시": when})
+        _post_webhook(webhook_url, log_row)  # 동기 전송: 바로 새로고침해도 시트에 반영되도록
+        sheet_rows.clear()
+    return r
 
 
 def all_rows() -> list:
@@ -122,6 +135,24 @@ def all_rows() -> list:
 
 def pending_rows() -> list:
     return [r for r in _memory_log() if r["승인상태"] == PENDING]
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def sheet_rows(webhook_url: str) -> list:
+    """구글 시트 '기록'의 상담 행(승인처리 행 제외)을 가져온다. 실패 시 빈 리스트."""
+    if not webhook_url:
+        return []
+    try:
+        url = webhook_url + ("&" if "?" in webhook_url else "?") + "action=rows"
+        raw = urllib.request.urlopen(url, timeout=15).read().decode("utf-8")
+        data = json.loads(raw)
+        return [r for r in data if r.get("상담번호") and r.get("상담유형") != APPROVE_MARK]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def sheet_pending(webhook_url: str) -> list:
+    return [r for r in sheet_rows(webhook_url) if (r.get("승인상태") or PENDING) == PENDING]
 
 
 def to_csv(rows: list) -> bytes:
@@ -172,13 +203,40 @@ function setup() {  // 처음 한 번 실행해도 되고, 첫 기록이 들어�
   }
 }
 
+function json_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
+
+function rows_() {  // 기록 시트 전체를 객체 배열로
+  const log = ss_().getSheetByName("기록");
+  const v = log.getDataRange().getValues();
+  const out = [];
+  for (let i = 1; i < v.length; i++) {
+    if (!v[i][0]) continue;
+    const o = {}; COLS.forEach((k, j) => o[k] = String(v[i][j] == null ? "" : v[i][j]));
+    out.push(o);
+  }
+  return out;
+}
+
 function doPost(e) {
   setup();
   const log = ss_().getSheetByName("기록");
   const d = JSON.parse(e.postData.contents);
-  log.appendRow(COLS.map(k => d[k] || ""));
+  if (d.action === "approve") {   // 앱 관리자(영양사) 승인 → 원 상담 행의 승인상태·승인자·승인일시·승인의견 갱신
+    const v = log.getDataRange().getValues();
+    for (let i = 1; i < v.length; i++) {
+      if (String(v[i][0]) === String(d["상담번호"]) && v[i][8] !== "✅ 영양사 승인처리") {
+        log.getRange(i + 1, 13, 1, 4).setValues([[d["승인상태"] || "", d["승인자"] || "", d["승인일시"] || "", d["승인의견"] || ""]]);
+      }
+    }
+  }
+  log.appendRow(COLS.map(k => d[k] || ""));   // 이력 행 추가 (상담 또는 승인처리)
   return ContentService.createTextOutput("ok");
 }
 
-function doGet() { setup(); return ContentService.createTextOutput("ok - 기록/통계 시트 준비됨"); }
+function doGet(e) {
+  setup();
+  const a = (e && e.parameter && e.parameter.action) || "";
+  if (a === "rows") return json_(rows_());
+  return ContentService.createTextOutput("ok - 기록/통계 시트 준비됨");
+}
 """

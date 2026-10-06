@@ -462,14 +462,23 @@ with t5:
 if IS_ADMIN:
     with t6:
         st.markdown("#### 📊 상담 기록 및 통계 (관리자)")
-        rows = L.all_rows()
+        sheet_url = str(_secret("SHEET_URL", L.SHEET_URL))
         if LOG_WEBHOOK_URL:
-            st.success("구글 시트 자동 기록이 켜져 있습니다. 아래 표는 현재 서버 세션의 백업 기록입니다.")
+            rows = L.sheet_rows(LOG_WEBHOOK_URL)
+            pending = L.sheet_pending(LOG_WEBHOOK_URL)
+            hc1, hc2 = st.columns([3, 1])
+            hc1.success(f"구글 시트와 연동 중 — 아래 기록·승인 대기·통계는 시트 '기록'에서 직접 읽어옵니다. [📄 구글 시트 열기 (기록·통계)]({sheet_url})")
+            if hc2.button("🔄 시트 새로고침", use_container_width=True):
+                L.sheet_rows.clear()
+                st.rerun()
+            if not rows and L.all_rows():
+                st.warning("시트에서 기록을 읽지 못했습니다(Apps Script 새 버전 배포 필요 또는 일시 오류). 서버 백업 기록을 대신 표시합니다.")
+                rows, pending = L.all_rows(), L.pending_rows()
         else:
+            rows, pending = L.all_rows(), L.pending_rows()
             st.warning("LOG_WEBHOOK_URL 이 설정되지 않아 구글 시트 기록이 꺼져 있습니다. 서버가 재시작되면 아래 기록은 사라지니 주기적으로 CSV를 내려받으세요.")
         # ── 영양사 승인 처리 ──
         st.markdown("### ✅ 영양사 승인 처리")
-        pending = L.pending_rows()
         if not pending:
             st.info("승인 대기 중인 상담이 없습니다.")
         else:
@@ -487,7 +496,7 @@ if IS_ADMIN:
                 comment = st.text_area("영양사 의견 (시설에 전달할 조건·수정 사항)", placeholder="예: 돼지고기 대체 승인. 단, 1.5cm 이하로 썰어 제공하고 원산지 게시판 수정할 것.")
                 ok = st.form_submit_button("승인 결정 저장", use_container_width=True)
             if ok:
-                L.approve(sel["상담번호"], status, f"{USER['name']}({USER['role']})", comment.strip(), LOG_WEBHOOK_URL)
+                L.approve(sel["상담번호"], status, f"{USER['name']}({USER['role']})", comment.strip(), LOG_WEBHOOK_URL, base=sel)
                 st.success(f"{sel['상담번호']} → {status} 처리되었습니다. (승인자: {USER['name']})")
                 st.rerun()
 
