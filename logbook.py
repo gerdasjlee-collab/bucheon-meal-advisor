@@ -211,7 +211,7 @@ function rows_() {  // 기록 시트 전체를 객체 배열로
   const out = [];
   for (let i = 1; i < v.length; i++) {
     if (!v[i][0]) continue;
-    const o = {}; COLS.forEach((k, j) => o[k] = String(v[i][j] == null ? "" : v[i][j]));
+    const o = {}; COLS.forEach((k, j) => { const x = v[i][j]; o[k] = (x instanceof Date) ? Utilities.formatDate(x, "Asia/Seoul", "yyyy-MM-dd HH:mm:ss") : String(x == null ? "" : x); });
     out.push(o);
   }
   return out;
